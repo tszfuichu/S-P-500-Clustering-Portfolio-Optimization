@@ -1,0 +1,110 @@
+import pandas as pd
+import yfinance as yf
+import numpy as np
+import matplotlib as plt
+import requests
+from io import StringIO
+from datetime import date, timedelta
+import pandas_ta as ta
+
+pd.set_option('display.max_columns', None)
+pd.set_option('display.width', None)
+
+#Get all the tickers from url (example:S&P500)
+
+class GetTickers:
+    def __init__(self,url):
+        self.url = url
+        self.tickers = []
+
+    def get_tickers(self):
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
+        response = requests.get(self.url, headers = headers)
+        html = StringIO(response.text)
+        tables = pd.read_html(html)
+        truetable = None
+
+        for table in tables:
+            if "Symbol" in table.columns:
+                truetable = pd.DataFrame(table)
+                break
+
+        truetable['Symbol'] = truetable['Symbol'].str.replace('.','-')
+        self.tickers = truetable['Symbol'].unique().tolist()
+        return self.tickers
+
+#Get the stock data by providing Tickers
+
+class GetStockData:
+    def __init__(self,tickers):
+        self.tickers = tickers
+
+    def fetch_data(self):
+        start_date = (date.today() - timedelta(5475)).strftime('%Y-%m-%d')
+        end_date = date.today().strftime('%Y-%m-%d')
+        df = yf.download(tickers = self.tickers, start = start_date, end = end_date, auto_adjust= True,threads=True)
+        df = df.stack()
+        df.index.names = ('Date','Ticker')
+        return df
+
+#Calculate feature and technical indicator for each stock (Garman-Klass Volatility, RSI, Bollinger Bands, ATR, MACD, Dollar Volume)
+
+class Calculate_indicators:
+    @staticmethod
+    def compute_technical_indicators(df):
+
+        #Calculate the Garman-Klass Volatility
+        df['garman_klass_vol'] = ((np.log(df['High']) - np.log(df['Low'])) ** 2) / 2 - \
+                                 (2 * np.log(2) - 1) * ((np.log(df['Close']) - np.log(df['Open'])) ** 2)
+
+        #Calculate the RSI
+        df['RSI'] = df.groupby(level=1, group_keys = False)['Close'].transform(lambda x: ta.rsi(close=x , length = 14))
+
+        #Calculate the Bollinger Bands (Upper,Middle,Bottom)
+        def compute_bb(close):
+            # Use log1p to stabilize variance and normalize price distribution for Bollinger Bands.
+            bb = ta.bbands(close=np.log1p(close), length=14)
+            return bb.iloc[:, 0:3]
+
+        df[['BBL', 'BBM', 'BBU']] =  df.groupby(level=1, group_keys=False)['Close'].apply(compute_bb)
+
+        #Create a Z-score Function (Rolling one year data avoid the look-ahead bias)
+        def Zscore(x, window=252):
+            role = x.rolling(window=window, min_periods=window)
+            x = (x-role.mean())/role.std()
+            return x
+
+        #Calculate the ATR and standardize it
+
+        raw_atr = df.groupby(level = 1, group_keys = False).apply(lambda x:  ta.atr(high=x['High'],low= x['Low'],close=x['Close'], length=14))
+        df['ATR'] = raw_atr.groupby(level = 1, group_keys= False).transform(Zscore)
+
+        #Calculate the MACD
+
+        def compute_MACD(close):
+            macd = ta.macd(close=close, fast=12, slow=26, signal=9).iloc[:,0]
+            if macd is None or macd.empty:
+                return pd.Series(np.nan, index=close.index)
+            return Zscore(macd)
+
+        df['MACD'] = df.groupby(level = 1, group_keys= False)['Close'].apply(compute_MACD)
+
+        #Calculate the Dollar Volume
+        df['Dollar_Volume'] = df['Close']*df['Volume']/1e6
+
+        #Return the DataFrame
+        return df
+
+
+#Get Tickers
+sp500 =GetTickers('https://en.wikipedia.org/wiki/List_of_S%26P_500_companies')
+sp500ticker_list = sp500.get_tickers()
+
+#Get the Stock Data
+sp500stock_data = GetStockData(sp500ticker_list)
+sp500stock_data = sp500stock_data.fetch_data()
+
+#Calculate the indicators
+sp500_with_indicators = Calculate_indicators.compute_technical_indicators(sp500stock_data)
+print(sp500_with_indicators.tail(500))
+
