@@ -12,6 +12,10 @@ from statsmodels.regression.rolling import RollingOLS
 import statsmodels.api as sm
 from sklearn.cluster import KMeans
 from sklearn.preprocessing import StandardScaler
+from pypfopt.efficient_frontier import EfficientFrontier
+from pypfopt import risk_models
+from pypfopt import expected_returns
+
 from pandas.conftest import ascending
 
 pd.set_option('display.max_columns', None)
@@ -217,7 +221,6 @@ Final_df = sp500_Monthly_return.join(Beta_shift1)
 #First 24 Month data and 2026-01-31 to 2026-02-28 data will drop. Ensure all the data used for model training are real observation
 Final_df = Final_df.dropna()
 Final_df = Final_df.drop(columns = ['Close'])
-print(Final_df)
 
 #Make sure the data is cleaned
 #print(f'Date after cleaning,from {Final_df.index.get_level_values(level = 'Date').min()} to {Final_df.index.get_level_values(level = 'Date').max()}')
@@ -234,37 +237,77 @@ class K_means:
         #scaler = StandardScaler()
         #scaled_data = scaler.fit_transform(df[features])
 
-        df['Cluster'] = KMeans(n_clusters=4,
-                               random_state = 0,
-                               init = 'random').fit_predict(df)
+        df['Cluster'] = (KMeans(n_clusters=4,
+                                random_state = 0,
+                                init = initial_centroids,).fit_predict(df))
+
+        cluster_means = df.groupby('Cluster')['RSI'].mean()
+        sorted_cluster_means = cluster_means.sort_values(ascending = False).index
+        mapping = {old_id: new_id for new_id, old_id in enumerate(sorted_cluster_means)}
+
+        df['Cluster'] = df['Cluster'].map(mapping)
+
         return df
 
 class Plot_data:
     @staticmethod
     def plot_clusters(df):
         plt.style.use('ggplot')
-        cluster0 = df[df['Cluster'] == 0]
-        cluster1 = df[df['Cluster'] == 1]
-        cluster2 = df[df['Cluster'] == 2]
-        cluster3 = df[df['Cluster'] == 3]
+        color = ['red', 'blue', 'green', 'yellow']
 
-        plt.scatter(cluster0['RSI'], cluster0['ATR'], color='red', label='Cluster 0')
-        plt.scatter(cluster1['RSI'], cluster1['ATR'], color='blue', label='Cluster 1')
-        plt.scatter(cluster2['RSI'], cluster2['ATR'], color='green', label='Cluster 2')
-        plt.scatter(cluster3['RSI'], cluster3['ATR'], color='yellow', label='Cluster 3')
+        for cluster_id,DataFrame in df.groupby('Cluster'):
+            plt.scatter(DataFrame.iloc[:,1], DataFrame.iloc[:,5], color=color[cluster_id],label=f'Cluster {cluster_id}')
 
         plt.legend()
         plt.show()
         return
 
+#Apply pre-defined centroids
+target_rsi_value = [30,45,55,70]
+initial_centroids = np.zeros((len(target_rsi_value),18))
+initial_centroids[:,2] = target_rsi_value
+
+#Apply the K-means Function
 Final_df = Final_df.groupby('Date',group_keys = False).apply(K_means.kmeans)
 
+#Plot a chart to see which cluster in which position
+'''
 for i in Final_df.index.get_level_values('Date').unique().tolist():
     Data = Final_df.xs(i, level = 0)
     plt.title(f'Date {i}')
     Plot_data.plot_clusters(Data)
+'''
 
+#Filter the Data with RSI > 70 and ensure today is using the data in previous day(Avoid the look-ahead bias)
+Filter_Data = Final_df[Final_df['Cluster'] == 0]
+Filter_Data = Filter_Data.reset_index(level = 1)
+Filter_Data.index = Filter_Data.index+pd.DateOffset(days=1)
+Filter_Data = Filter_Data.reset_index().set_index(['Date','Ticker'])
 
+Date = Filter_Data.index.get_level_values('Date').unique().tolist()
+List_to_invest = {}
+for i in Date:
+    List_to_invest[i.strftime('%Y-%m-%d')] = Filter_Data.xs(i, level = 0).index.tolist()
 
+#Define portfoilo optimization function
+def Optimize_weight(price,lower_bound = 0):
+    returns = expected_returns.mean_historical_return(prices = price,
+                                                     frequency = 252)
 
+    cov = risk_models.sample_cov(prices = price,
+                                 frequency = 252)
 
+    ef = EfficientFrontier(expected_returns = returns,
+                           cov_matrix = cov,
+                           weight_bounds=(lower_bound, .1),
+                           solver= 'SCS'
+                           )
+    weights = ef.max_sharpe()
+    return ef.clean_weights()
+
+#Download Fresh Daily Prices Data only for short_listed stocks 'List_to_invest'
+stocks = Final_df.index.get_level_values('Ticker').unique().tolist()
+stocks_data = yf.download(tickers=stocks,
+                          start = Final_df.index.get_level_values('Date').unique()[0]-pd.DateOffset(months=12),
+                          end = Final_df.index.get_level_values('Date').unique()[-1]
+                          )
