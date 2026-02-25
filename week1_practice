@@ -1,14 +1,23 @@
 import pandas as pd
 import yfinance as yf
 import numpy as np
-import matplotlib as plt
+import matplotlib.pyplot as plt
 import requests
+import io
 from io import StringIO
 from datetime import date, timedelta
 import pandas_ta as ta
+from pyexpat import features
+from statsmodels.regression.rolling import RollingOLS
+import statsmodels.api as sm
+from sklearn.cluster import KMeans
+from sklearn.preprocessing import StandardScaler
+from pandas.conftest import ascending
 
 pd.set_option('display.max_columns', None)
 pd.set_option('display.width', None)
+
+#Feature Engineering
 
 #Get all the tickers from url (example:S&P500)
 
@@ -95,6 +104,87 @@ class Calculate_indicators:
         #Return the DataFrame
         return df
 
+# Filtering the Top 150 Most Liquid Stocks in each Month
+class Filtering:
+    @staticmethod
+    def filter_liquid_stock(df):
+
+        #Create a DataFrame that Average Dollar Volume in a month
+        df_dv_month = df['Dollar_Volume'].unstack(level=1).resample('ME').mean().stack('Ticker').to_frame('Dollar_Volume')
+
+        # Create a DataFrame that Other Indicator in a month
+        last_col = [c for c in df.columns.unique(level=0) if
+                    c not in ["Dollar_Volume", "Volume", "Open", "High", "Low"]]
+        df_other_month = df[last_col].unstack(level = 1).resample('ME').last().stack("Ticker")
+
+        df_after_filter = pd.concat([df_dv_month,df_other_month],axis=1).dropna()
+
+        def filter_top_150(df):
+            df['Dollar_Volume'] = df['Dollar_Volume'].unstack(level=1).rolling(5*12,min_periods=6).mean().stack('Ticker')
+            df['Rank'] = df.groupby(level=0, group_keys = False)['Dollar_Volume'].apply(lambda x: x.rank(ascending = False))
+            df = df[df['Rank'] <= 150]
+            df = df.drop(['Dollar_Volume','Rank'], axis = 1)
+            return df
+
+        df_after_filter =  filter_top_150(df_after_filter)
+
+        return df_after_filter
+
+    # fliter out the stock less than 10 months
+    def filter_less_than_10m(df):
+        observation = df.groupby(level = 1).size()
+        valid_stock_list = observation[observation > 10]
+        valid_stock_data = df[df.index.get_level_values('Ticker').isin(valid_stock_list.index)]
+
+        return valid_stock_data
+
+class Monthly_return:
+    def monthly_return(df):
+        temp_df = df.copy()
+        temp_df = temp_df.sort_index(level = ['Ticker',0])
+        outlier_cutoff = 0.005
+        lags = [1,2,3,6,9,12]
+
+        for lag in lags:
+            returns = temp_df.groupby(level = 'Ticker',group_keys = False)['Close'].pct_change(lag)
+
+            cliped_return = returns.pipe(lambda x: x.clip(lower = x.quantile(outlier_cutoff),
+                                                          upper = x.quantile(1 - outlier_cutoff)))
+
+            temp_df[f'Return_{lag}m']= (cliped_return.add(1)).pow(1/lag).sub(1)
+
+        return temp_df
+
+#Downloading the Fama-French Factors
+class Get_fff:
+    def get_fff(path):
+        FFF = pd.read_csv(path, skiprows = 3, index_col = 0)
+        FFF = FFF[FFF.index.str.strip().str.len() == 6]
+        FFF.index = pd.to_datetime(FFF.index, format='%Y%m')
+        FFF.index = FFF.index + pd.offsets.MonthEnd(0)
+        FFF.index.name = 'Date'
+        FFF = FFF.drop("RF",axis=1)
+        FFF = FFF.loc['2012-09-30':]
+        FFF = FFF.astype(float) / 100
+        return FFF
+
+#Calculate the Rolling Factor Beta
+class Calculate_Beta:
+    def calculate_beta(df):
+        betas = df.groupby(level = 1,group_keys = False).apply(lambda x: RollingOLS(endog = x['Return_1m'],
+                                                                                    exog = sm.add_constant(x.drop('Return_1m',axis = 1)),
+                                                                                    window = min(24,x.shape[0]),
+                                                                                    min_nobs = len(x.columns)+1)
+                                                                                    .fit(params_only=True)
+                                                                                    .params
+                                                                                    .drop('const',axis = 1)
+                                                                                    )
+
+        return betas
+
+#The path of Fama-French Factors and transfer to a DataFrame
+FFF_path = r"C:\Users\User\Downloads\F-F_Research_Data_5_Factors_2x3.csv"
+FFF = Get_fff.get_fff(FFF_path)
 
 #Get Tickers
 sp500 =GetTickers('https://en.wikipedia.org/wiki/List_of_S%26P_500_companies')
@@ -106,5 +196,75 @@ sp500stock_data = sp500stock_data.fetch_data()
 
 #Calculate the indicators
 sp500_with_indicators = Calculate_indicators.compute_technical_indicators(sp500stock_data)
-print(sp500_with_indicators.tail(500))
+
+# Calculate the Monthly Return for different time horizons as features
+sp500_Monthly_return = Monthly_return.monthly_return(sp500_with_indicators)
+
+#filter top 150 liquid stock
+sp500_Monthly_return = Filtering.filter_liquid_stock(sp500_Monthly_return)
+
+#Join The FFF to the df[return1m]
+FFF_1m = FFF.join(sp500_Monthly_return['Return_1m']).sort_index()
+FFF_1m = Filtering.filter_less_than_10m(FFF_1m)
+
+#Calculate the Rolling Factor Beta
+Betas = Calculate_Beta.calculate_beta(FFF_1m)
+
+#Join the Betas to sp500_Monthly_return
+# shift(1) to avoid the look-ahead bias
+Beta_shift1 = (Betas.groupby(level = 1)).shift(1)
+Final_df = sp500_Monthly_return.join(Beta_shift1)
+#First 24 Month data and 2026-01-31 to 2026-02-28 data will drop. Ensure all the data used for model training are real observation
+Final_df = Final_df.dropna()
+Final_df = Final_df.drop(columns = ['Close'])
+print(Final_df)
+
+#Make sure the data is cleaned
+#print(f'Date after cleaning,from {Final_df.index.get_level_values(level = 'Date').min()} to {Final_df.index.get_level_values(level = 'Date').max()}')
+
+#Feature Engineering(End)
+
+#Machine Learning Model
+
+#K-Means Clustering Algorithm
+class K_means:
+    @staticmethod
+    def kmeans(df):
+        #features = df.columns
+        #scaler = StandardScaler()
+        #scaled_data = scaler.fit_transform(df[features])
+
+        df['Cluster'] = KMeans(n_clusters=4,
+                               random_state = 0,
+                               init = 'random').fit_predict(df)
+        return df
+
+class Plot_data:
+    @staticmethod
+    def plot_clusters(df):
+        plt.style.use('ggplot')
+        cluster0 = df[df['Cluster'] == 0]
+        cluster1 = df[df['Cluster'] == 1]
+        cluster2 = df[df['Cluster'] == 2]
+        cluster3 = df[df['Cluster'] == 3]
+
+        plt.scatter(cluster0['RSI'], cluster0['ATR'], color='red', label='Cluster 0')
+        plt.scatter(cluster1['RSI'], cluster1['ATR'], color='blue', label='Cluster 1')
+        plt.scatter(cluster2['RSI'], cluster2['ATR'], color='green', label='Cluster 2')
+        plt.scatter(cluster3['RSI'], cluster3['ATR'], color='yellow', label='Cluster 3')
+
+        plt.legend()
+        plt.show()
+        return
+
+Final_df = Final_df.groupby('Date',group_keys = False).apply(K_means.kmeans)
+
+for i in Final_df.index.get_level_values('Date').unique().tolist():
+    Data = Final_df.xs(i, level = 0)
+    plt.title(f'Date {i}')
+    Plot_data.plot_clusters(Data)
+
+
+
+
 
