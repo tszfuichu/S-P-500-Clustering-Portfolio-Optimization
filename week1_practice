@@ -143,6 +143,7 @@ class Filtering:
         return valid_stock_data
 
 class Monthly_return:
+    @staticmethod
     def monthly_return(df):
         temp_df = df.copy()
         temp_df = temp_df.sort_index(level = ['Ticker',0])
@@ -291,23 +292,60 @@ for i in Date:
 
 #Define portfoilo optimization function
 def Optimize_weight(price,lower_bound = 0):
-    returns = expected_returns.mean_historical_return(prices = price,
-                                                     frequency = 252)
+    try:
+        returns = expected_returns.mean_historical_return(prices = price,
+                                                         frequency = 252)
 
-    cov = risk_models.sample_cov(prices = price,
-                                 frequency = 252)
+        cov = risk_models.sample_cov(prices = price,
+                                     frequency = 252)
 
-    ef = EfficientFrontier(expected_returns = returns,
-                           cov_matrix = cov,
-                           weight_bounds=(lower_bound, .1),
-                           solver= 'SCS'
-                           )
-    weights = ef.max_sharpe()
-    return ef.clean_weights()
+        upper_bound = max(0.1, 1.1 / len(price.columns))
+
+        ef = EfficientFrontier(expected_returns = returns,
+                               cov_matrix = cov,
+                               weight_bounds=(lower_bound, upper_bound),
+                               solver= 'SCS'
+                               )
+        try:
+            ef.max_sharpe(risk_free_rate=0)
+        except ValueError:
+            print('Expected returns are all below the risk-free rate; switch to a minimum volatility allocation')
+            ef.min_volatility()
+        return ef.clean_weights()
+    except Exception as e:
+        print(f"Optimization failed：{e}")
+        return None
+
 
 #Download Fresh Daily Prices Data only for short_listed stocks 'List_to_invest'
 stocks = Final_df.index.get_level_values('Ticker').unique().tolist()
 stocks_data = yf.download(tickers=stocks,
                           start = Final_df.index.get_level_values('Date').unique()[0]-pd.DateOffset(months=12),
-                          end = Final_df.index.get_level_values('Date').unique()[-1]
+                          end = Final_df.index.get_level_values('Date').unique()[-1],
+                          auto_adjust=True,
+                          threads=True
                           )
+
+print(List_to_invest)
+print(stocks_data)
+
+#Calculate the Daily Return of the stock_data
+returns_dataframe = np.log(stocks_data['Close']).diff()
+portfolio_df = pd.DataFrame()
+
+for start_date in List_to_invest.keys():
+    end_date = (pd.to_datetime(start_date)+pd.offsets.MonthEnd(0)).strftime('%Y-%m-%d')
+    cols = List_to_invest[start_date]
+    optimization_start_date = (pd.to_datetime(start_date)-pd.DateOffset(months = 12)).strftime('%Y-%m-%d')
+    optimization_end_date = (pd.to_datetime(start_date)-pd.DateOffset(days = 1)).strftime('%Y-%m-%d')
+
+    optimization_df = stocks_data[optimization_start_date:optimization_end_date]['Close'][cols]
+    lb = round(1/(len(optimization_df.columns)*2),3)
+    weights = Optimize_weight(price=optimization_df,lower_bound = lb)
+
+    print(weights)
+
+
+
+
+
