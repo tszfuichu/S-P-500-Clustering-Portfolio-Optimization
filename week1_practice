@@ -224,7 +224,7 @@ Final_df = Final_df.dropna()
 Final_df = Final_df.drop(columns = ['Close'])
 
 #Make sure the data is cleaned
-#print(f'Date after cleaning,from {Final_df.index.get_level_values(level = 'Date').min()} to {Final_df.index.get_level_values(level = 'Date').max()}')
+print(f'Final_df Date after cleaning,from {Final_df.index.get_level_values(level = 'Date').min()} to {Final_df.index.get_level_values(level = 'Date').max()}')
 
 #Feature Engineering(End)
 
@@ -280,7 +280,7 @@ for i in Final_df.index.get_level_values('Date').unique().tolist():
 '''
 
 #Filter the Data with RSI > 70 and ensure today is using the data in previous day(Avoid the look-ahead bias)
-Filter_Data = Final_df[Final_df['Cluster'] == 0]
+Filter_Data = Final_df[Final_df['Cluster'] == 1]
 Filter_Data = Filter_Data.reset_index(level = 1)
 Filter_Data.index = Filter_Data.index+pd.DateOffset(days=1)
 Filter_Data = Filter_Data.reset_index().set_index(['Date','Ticker'])
@@ -291,31 +291,47 @@ for i in Date:
     List_to_invest[i.strftime('%Y-%m-%d')] = Filter_Data.xs(i, level = 0).index.tolist()
 
 #Define portfoilo optimization function
-def Optimize_weight(price,lower_bound = 0):
+def Optimize_weight(price):
     try:
+        if price.empty or len(price.columns) < 3:
+            return {'There are no stock RSI above 80 in this month or The number of valid stock is below 3'}
+
         returns = expected_returns.mean_historical_return(prices = price,
                                                          frequency = 252)
 
         cov = risk_models.sample_cov(prices = price,
                                      frequency = 252)
 
+        raw_lb = 1/(len(price.columns)*2)
+        lower_bound = min(round(raw_lb, 3), 0.9 / len(price.columns))
         upper_bound = max(0.1, 1.1 / len(price.columns))
 
-        ef = EfficientFrontier(expected_returns = returns,
-                               cov_matrix = cov,
-                               weight_bounds=(lower_bound, upper_bound),
-                               solver= 'SCS'
-                               )
+        def create_ef():
+            return EfficientFrontier(expected_returns = returns,
+                                     cov_matrix = cov,
+                                     weight_bounds=(lower_bound, upper_bound),
+                                     solver= 'SCS'
+                                     )
         try:
-            ef.max_sharpe(risk_free_rate=0)
+            ef_shape = create_ef()
+            ef_shape.max_sharpe(risk_free_rate=0)
+            return ef_shape.clean_weights()
+
         except ValueError:
             print('Expected returns are all below the risk-free rate; switch to a minimum volatility allocation')
-            ef.min_volatility()
-        return ef.clean_weights()
+            return {}
+        except Exception as e:
+            print('Solver status: infeasible')
+            try:
+                ef_min_vol = create_ef()
+                ef_min_vol.min_volatility()
+                return ef_min_vol.clean_weights()
+            except Exception as e:
+                return {}
+
     except Exception as e:
         print(f"Optimization failed：{e}")
-        return None
-
+        return {}
 
 #Download Fresh Daily Prices Data only for short_listed stocks 'List_to_invest'
 stocks = Final_df.index.get_level_values('Ticker').unique().tolist()
@@ -331,21 +347,63 @@ print(stocks_data)
 
 #Calculate the Daily Return of the stock_data
 returns_dataframe = np.log(stocks_data['Close']).diff()
-portfolio_df = pd.DataFrame()
+portfolio_df = {}
+all_portfolio_returns = []
 
 for start_date in List_to_invest.keys():
     end_date = (pd.to_datetime(start_date)+pd.offsets.MonthEnd(0)).strftime('%Y-%m-%d')
     cols = List_to_invest[start_date]
+    valid_cols = [c for c in cols if c in stocks_data['Close'].columns]
     optimization_start_date = (pd.to_datetime(start_date)-pd.DateOffset(months = 12)).strftime('%Y-%m-%d')
     optimization_end_date = (pd.to_datetime(start_date)-pd.DateOffset(days = 1)).strftime('%Y-%m-%d')
 
-    optimization_df = stocks_data[optimization_start_date:optimization_end_date]['Close'][cols]
-    lb = round(1/(len(optimization_df.columns)*2),3)
-    weights = Optimize_weight(price=optimization_df,lower_bound = lb)
+
+    if len(valid_cols) < 3:
+        zero_idx = returns_dataframe.loc[start_date:end_date].index
+        all_portfolio_returns.append(pd.Series(0, index=zero_idx))
+        continue
+
+    optimization_df = stocks_data['Close'].loc[optimization_start_date:optimization_end_date,valid_cols]
+
+    weights = Optimize_weight(price=optimization_df)
+
+    if weights:
+        Monthly_return_with_valid_stock = returns_dataframe.loc[start_date:end_date, list(weights.keys())]
+        weights_series = pd.Series(weights)
+        weighted_returns = Monthly_return_with_valid_stock.mul(weights_series, axis=1).sum(axis=1)
+        all_portfolio_returns.append(weighted_returns)
+    else:
+        zero_idx = returns_dataframe.loc[start_date:end_date].index
+        all_portfolio_returns.append(pd.Series(0, index=zero_idx))
 
     print(weights)
 
+if all_portfolio_returns:
+    portfolio_df = pd.concat(all_portfolio_returns)
+ 
+    portfolio_df = portfolio_df[~portfolio_df.index.duplicated()]
 
+    cumulative_returns = np.exp(portfolio_df.cumsum())
+    plt.plot(cumulative_returns, label='Strategy Cumulative Returns',color='blue',linestyle='-',alpha=0.7)
+
+test_start = portfolio_df.index.min()
+test_end = portfolio_df.index.max()
+
+sp500_buy_and_hold = yf.download(tickers='SPY',start = test_start,end = test_end)
+spy500_returns = np.log(sp500_buy_and_hold['Close']).diff().dropna()
+spy500_returns = spy500_returns.reindex(portfolio_df.index).fillna(0)
+spy_cumulative = np.exp(spy500_returns.cumsum())
+plt.plot(spy_cumulative, label='S&P 500 (SPY)', color='red', linestyle='-', alpha=0.7)
+plt.title('Strategy vs S&P 500 Cumulative Returns')
+plt.xlabel('Date')
+plt.ylabel('Cumulative Return (Multiple)')
+plt.legend()
+plt.grid(True)
+plt.show()
+
+print(all_portfolio_returns)
+print(portfolio_df)
+print(cumulative_returns)
 
 
 
