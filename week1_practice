@@ -280,7 +280,7 @@ for i in Final_df.index.get_level_values('Date').unique().tolist():
 '''
 
 #Filter the Data with RSI > 70 and ensure today is using the data in previous day(Avoid the look-ahead bias)
-Filter_Data = Final_df[Final_df['Cluster'] == 1]
+Filter_Data = Final_df[Final_df['Cluster'] == 0]
 Filter_Data = Filter_Data.reset_index(level = 1)
 Filter_Data.index = Filter_Data.index+pd.DateOffset(days=1)
 Filter_Data = Filter_Data.reset_index().set_index(['Date','Ticker'])
