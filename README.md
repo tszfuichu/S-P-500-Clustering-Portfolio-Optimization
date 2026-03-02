@@ -40,28 +40,34 @@ Backtesting:
 - Simulates a monthly rebalancing schedule.
 - Calculates daily portfolio returns and compares the cumulative performance against a buy-and-hold benchmark (SPY).
 
+
 Although the strategy did not generate positive alpha, the process of building it taught me invaluable lessons about quantitative finance and data science:
 
 1. The Reality of Momentum vs. Mean Reversion
+
 By filtering for stocks in the highest RSI cluster (RSI>70), the algorithm attempts a strong momentum play. However, in reality, stocks with extremely high RSI are often overbought and due for a pullback. Combining this with a 12-month lookback for Max Sharpe optimization means the algorithm heavily chases past winners right before they mean-revert. Lesson: High historical returns do not guarantee future returns, and overbought signals might be better used for shorting or taking profits rather than buying.
 
-2. Handling Look-Ahead Bias & Survivorship Bias
+3. Handling Look-Ahead Bias & Survivorship Bias
+
 I learned how easy it is to accidentally peek into the future when building trading models. I successfully mitigated look-ahead bias by:
 Using .shift(1) on the rolling factor betas.
 Shifting the cluster selection dates by one day (pd.DateOffset(days=1)).
 Using rolling windows for Z-score standardizations rather than whole-dataset normalization.
 Using the current Wikipedia S&P 500 list inherently introduces some survivorship bias, which is a great area for future improvement
 
-3. Advanced Pandas Data Manipulation
+4. Advanced Pandas Data Manipulation
+
 Working with financial time series requires heavy use of MultiIndex DataFrames. I leveled up my skills in:
 groupby(), unstack(), and stack() operations.
 Resampling daily data to monthly frequencies (resample('ME')).
 Applying custom functions across cross-sections of data (xs).
 
-4. Robust Portfolio Optimization
+5. Robust Portfolio Optimization
+
 Optimization algorithms are highly sensitive to their inputs. I learned how to handle edge cases where convex solvers (like SCS) fail due to infeasible constraints or negative expected returns, implementing try-except blocks to gracefully fall back to Minimum Volatility allocations.
 
 Next Steps for Improvement
+
 To turn this pipeline into a profitable strategy, I plan to experiment with the following:
 
 Contrarian Strategy: Instead of buying the RSI>70 cluster, try buying the RSI<30 cluster (oversold) and waiting for mean reversion.
