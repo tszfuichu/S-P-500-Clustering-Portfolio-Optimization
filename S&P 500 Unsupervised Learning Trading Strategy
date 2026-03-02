@@ -243,9 +243,6 @@ Final_df = Final_df.drop(columns=['Close'])
 class K_means:
     @staticmethod
     def kmeans(df):
-        # features = df.columns
-        # scaler = StandardScaler()
-        # scaled_data = scaler.fit_transform(df[features])
 
         df['Cluster'] = (KMeans(n_clusters=4,
                                 random_state=0,
@@ -259,7 +256,7 @@ class K_means:
 
         return df
 
-
+'''
 class Plot_data:
     @staticmethod
     def plot_clusters(df):
@@ -273,7 +270,7 @@ class Plot_data:
         plt.legend()
         plt.show()
         return
-
+'''
 
 # Apply pre-defined centroids
 target_rsi_value = [30, 45, 55, 70]
