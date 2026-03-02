@@ -1,0 +1,2 @@
+# First Project: S&P 500 Clustering & Portfolio Optimization
+Requirement: pandas numpy yfinance matplotlib requests pandas-ta statsmodels scikit-learn PyPortfolioOpt
