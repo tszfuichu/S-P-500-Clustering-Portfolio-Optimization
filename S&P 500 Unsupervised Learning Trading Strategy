@@ -21,18 +21,20 @@ from pandas.conftest import ascending
 pd.set_option('display.max_columns', None)
 pd.set_option('display.width', None)
 
-#Feature Engineering
 
-#Get all the tickers from url (example:S&P500)
+# Feature Engineering
+
+# Get all the tickers from url (example:S&P500)
 
 class GetTickers:
-    def __init__(self,url):
+    def __init__(self, url):
         self.url = url
         self.tickers = []
 
     def get_tickers(self):
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
-        response = requests.get(self.url, headers = headers)
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
+        response = requests.get(self.url, headers=headers)
         html = StringIO(response.text)
         tables = pd.read_html(html)
         truetable = None
@@ -42,213 +44,221 @@ class GetTickers:
                 truetable = pd.DataFrame(table)
                 break
 
-        truetable['Symbol'] = truetable['Symbol'].str.replace('.','-')
+        truetable['Symbol'] = truetable['Symbol'].str.replace('.', '-')
         self.tickers = truetable['Symbol'].unique().tolist()
         return self.tickers
 
-#Get the stock data by providing Tickers
+
+# Get the stock data by providing Tickers
 
 class GetStockData:
-    def __init__(self,tickers):
+    def __init__(self, tickers):
         self.tickers = tickers
 
     def fetch_data(self):
         start_date = (date.today() - timedelta(5475)).strftime('%Y-%m-%d')
         end_date = date.today().strftime('%Y-%m-%d')
-        df = yf.download(tickers = self.tickers, start = start_date, end = end_date, auto_adjust= True,threads=True)
+        df = yf.download(tickers=self.tickers, start=start_date, end=end_date, auto_adjust=True, threads=True)
         df = df.stack()
-        df.index.names = ('Date','Ticker')
+        df.index.names = ('Date', 'Ticker')
         return df
 
-#Calculate feature and technical indicator for each stock (Garman-Klass Volatility, RSI, Bollinger Bands, ATR, MACD, Dollar Volume)
+
+# Calculate feature and technical indicator for each stock (Garman-Klass Volatility, RSI, Bollinger Bands, ATR, MACD, Dollar Volume)
 
 class Calculate_indicators:
     @staticmethod
     def compute_technical_indicators(df):
-
-        #Calculate the Garman-Klass Volatility
+        # Calculate the Garman-Klass Volatility
         df['garman_klass_vol'] = ((np.log(df['High']) - np.log(df['Low'])) ** 2) / 2 - \
                                  (2 * np.log(2) - 1) * ((np.log(df['Close']) - np.log(df['Open'])) ** 2)
 
-        #Calculate the RSI
-        df['RSI'] = df.groupby(level=1, group_keys = False)['Close'].transform(lambda x: ta.rsi(close=x , length = 14))
+        # Calculate the RSI
+        df['RSI'] = df.groupby(level=1, group_keys=False)['Close'].transform(lambda x: ta.rsi(close=x, length=14))
 
-        #Calculate the Bollinger Bands (Upper,Middle,Bottom)
+        # Calculate the Bollinger Bands (Upper,Middle,Bottom)
         def compute_bb(close):
             # Use log1p to stabilize variance and normalize price distribution for Bollinger Bands.
             bb = ta.bbands(close=np.log1p(close), length=14)
             return bb.iloc[:, 0:3]
 
-        df[['BBL', 'BBM', 'BBU']] =  df.groupby(level=1, group_keys=False)['Close'].apply(compute_bb)
+        df[['BBL', 'BBM', 'BBU']] = df.groupby(level=1, group_keys=False)['Close'].apply(compute_bb)
 
-        #Create a Z-score Function (Rolling one year data avoid the look-ahead bias)
+        # Create a Z-score Function (Rolling one year data avoid the look-ahead bias)
         def Zscore(x, window=252):
             role = x.rolling(window=window, min_periods=window)
-            x = (x-role.mean())/role.std()
+            x = (x - role.mean()) / role.std()
             return x
 
-        #Calculate the ATR and standardize it
+        # Calculate the ATR and standardize it
 
-        raw_atr = df.groupby(level = 1, group_keys = False).apply(lambda x:  ta.atr(high=x['High'],low= x['Low'],close=x['Close'], length=14))
-        df['ATR'] = raw_atr.groupby(level = 1, group_keys= False).transform(Zscore)
+        raw_atr = df.groupby(level=1, group_keys=False).apply(
+            lambda x: ta.atr(high=x['High'], low=x['Low'], close=x['Close'], length=14))
+        df['ATR'] = raw_atr.groupby(level=1, group_keys=False).transform(Zscore)
 
-        #Calculate the MACD
+        # Calculate the MACD
 
         def compute_MACD(close):
-            macd = ta.macd(close=close, fast=12, slow=26, signal=9).iloc[:,0]
+            macd = ta.macd(close=close, fast=12, slow=26, signal=9).iloc[:, 0]
             if macd is None or macd.empty:
                 return pd.Series(np.nan, index=close.index)
             return Zscore(macd)
 
-        df['MACD'] = df.groupby(level = 1, group_keys= False)['Close'].apply(compute_MACD)
+        df['MACD'] = df.groupby(level=1, group_keys=False)['Close'].apply(compute_MACD)
 
-        #Calculate the Dollar Volume
-        df['Dollar_Volume'] = df['Close']*df['Volume']/1e6
+        # Calculate the Dollar Volume
+        df['Dollar_Volume'] = df['Close'] * df['Volume'] / 1e6
 
-        #Return the DataFrame
+        # Return the DataFrame
         return df
+
 
 # Filtering the Top 150 Most Liquid Stocks in each Month
 class Filtering:
     @staticmethod
     def filter_liquid_stock(df):
-
-        #Create a DataFrame that Average Dollar Volume in a month
-        df_dv_month = df['Dollar_Volume'].unstack(level=1).resample('ME').mean().stack('Ticker').to_frame('Dollar_Volume')
+        # Create a DataFrame that Average Dollar Volume in a month
+        df_dv_month = df['Dollar_Volume'].unstack(level=1).resample('ME').mean().stack('Ticker').to_frame(
+            'Dollar_Volume')
 
         # Create a DataFrame that Other Indicator in a month
         last_col = [c for c in df.columns.unique(level=0) if
                     c not in ["Dollar_Volume", "Volume", "Open", "High", "Low"]]
-        df_other_month = df[last_col].unstack(level = 1).resample('ME').last().stack("Ticker")
+        df_other_month = df[last_col].unstack(level=1).resample('ME').last().stack("Ticker")
 
-        df_after_filter = pd.concat([df_dv_month,df_other_month],axis=1).dropna()
+        df_after_filter = pd.concat([df_dv_month, df_other_month], axis=1).dropna()
 
         def filter_top_150(df):
-            df['Dollar_Volume'] = df['Dollar_Volume'].unstack(level=1).rolling(5*12,min_periods=6).mean().stack('Ticker')
-            df['Rank'] = df.groupby(level=0, group_keys = False)['Dollar_Volume'].apply(lambda x: x.rank(ascending = False))
+            df['Dollar_Volume'] = df['Dollar_Volume'].unstack(level=1).rolling(5 * 12, min_periods=6).mean().stack(
+                'Ticker')
+            df['Rank'] = df.groupby(level=0, group_keys=False)['Dollar_Volume'].apply(lambda x: x.rank(ascending=False))
             df = df[df['Rank'] <= 150]
-            df = df.drop(['Dollar_Volume','Rank'], axis = 1)
+            df = df.drop(['Dollar_Volume', 'Rank'], axis=1)
             return df
 
-        df_after_filter =  filter_top_150(df_after_filter)
+        df_after_filter = filter_top_150(df_after_filter)
 
         return df_after_filter
 
     # fliter out the stock less than 10 months
     def filter_less_than_10m(df):
-        observation = df.groupby(level = 1).size()
+        observation = df.groupby(level=1).size()
         valid_stock_list = observation[observation > 10]
         valid_stock_data = df[df.index.get_level_values('Ticker').isin(valid_stock_list.index)]
 
         return valid_stock_data
 
+
 class Monthly_return:
     @staticmethod
     def monthly_return(df):
         temp_df = df.copy()
-        temp_df = temp_df.sort_index(level = ['Ticker',0])
+        temp_df = temp_df.sort_index(level=['Ticker', 0])
         outlier_cutoff = 0.005
-        lags = [1,2,3,6,9,12]
+        lags = [1, 2, 3, 6, 9, 12]
 
         for lag in lags:
-            returns = temp_df.groupby(level = 'Ticker',group_keys = False)['Close'].pct_change(lag)
+            returns = temp_df.groupby(level='Ticker', group_keys=False)['Close'].pct_change(lag)
 
-            cliped_return = returns.pipe(lambda x: x.clip(lower = x.quantile(outlier_cutoff),
-                                                          upper = x.quantile(1 - outlier_cutoff)))
+            cliped_return = returns.pipe(lambda x: x.clip(lower=x.quantile(outlier_cutoff),
+                                                          upper=x.quantile(1 - outlier_cutoff)))
 
-            temp_df[f'Return_{lag}m']= (cliped_return.add(1)).pow(1/lag).sub(1)
+            temp_df[f'Return_{lag}m'] = (cliped_return.add(1)).pow(1 / lag).sub(1)
 
         return temp_df
 
-#Downloading the Fama-French Factors
+
+# Downloading the Fama-French Factors
 class Get_fff:
     def get_fff(path):
-        FFF = pd.read_csv(path, skiprows = 3, index_col = 0)
+        FFF = pd.read_csv(path, skiprows=3, index_col=0)
         FFF = FFF[FFF.index.str.strip().str.len() == 6]
         FFF.index = pd.to_datetime(FFF.index, format='%Y%m')
         FFF.index = FFF.index + pd.offsets.MonthEnd(0)
         FFF.index.name = 'Date'
-        FFF = FFF.drop("RF",axis=1)
+        FFF = FFF.drop("RF", axis=1)
         FFF = FFF.loc['2012-09-30':]
         FFF = FFF.astype(float) / 100
         return FFF
 
-#Calculate the Rolling Factor Beta
+
+# Calculate the Rolling Factor Beta
 class Calculate_Beta:
     def calculate_beta(df):
-        betas = df.groupby(level = 1,group_keys = False).apply(lambda x: RollingOLS(endog = x['Return_1m'],
-                                                                                    exog = sm.add_constant(x.drop('Return_1m',axis = 1)),
-                                                                                    window = min(24,x.shape[0]),
-                                                                                    min_nobs = len(x.columns)+1)
-                                                                                    .fit(params_only=True)
-                                                                                    .params
-                                                                                    .drop('const',axis = 1)
-                                                                                    )
+        betas = df.groupby(level=1, group_keys=False).apply(lambda x: RollingOLS(endog=x['Return_1m'],
+                                                                                 exog=sm.add_constant(
+                                                                                     x.drop('Return_1m', axis=1)),
+                                                                                 window=min(24, x.shape[0]),
+                                                                                 min_nobs=len(x.columns) + 1)
+                                                            .fit(params_only=True)
+                                                            .params
+                                                            .drop('const', axis=1)
+                                                            )
 
         return betas
 
-#The path of Fama-French Factors and transfer to a DataFrame
+
+# The path of Fama-French Factors and transfer to a DataFrame
 FFF_path = r"C:\Users\User\Downloads\F-F_Research_Data_5_Factors_2x3.csv"
 FFF = Get_fff.get_fff(FFF_path)
 
-#Get Tickers
-sp500 =GetTickers('https://en.wikipedia.org/wiki/List_of_S%26P_500_companies')
+# Get Tickers
+sp500 = GetTickers('https://en.wikipedia.org/wiki/List_of_S%26P_500_companies')
 sp500ticker_list = sp500.get_tickers()
 
-#Get the Stock Data
+# Get the Stock Data
 sp500stock_data = GetStockData(sp500ticker_list)
 sp500stock_data = sp500stock_data.fetch_data()
 
-#Calculate the indicators
+# Calculate the indicators
 sp500_with_indicators = Calculate_indicators.compute_technical_indicators(sp500stock_data)
 
 # Calculate the Monthly Return for different time horizons as features
 sp500_Monthly_return = Monthly_return.monthly_return(sp500_with_indicators)
 
-#filter top 150 liquid stock
+# filter top 150 liquid stock
 sp500_Monthly_return = Filtering.filter_liquid_stock(sp500_Monthly_return)
 
-#Join The FFF to the df[return1m]
+# Join The FFF to the df[return1m]
 FFF_1m = FFF.join(sp500_Monthly_return['Return_1m']).sort_index()
 FFF_1m = Filtering.filter_less_than_10m(FFF_1m)
 
-#Calculate the Rolling Factor Beta
+# Calculate the Rolling Factor Beta
 Betas = Calculate_Beta.calculate_beta(FFF_1m)
 
-#Join the Betas to sp500_Monthly_return
+# Join the Betas to sp500_Monthly_return
 # shift(1) to avoid the look-ahead bias
-Beta_shift1 = (Betas.groupby(level = 1)).shift(1)
+Beta_shift1 = (Betas.groupby(level=1)).shift(1)
 Final_df = sp500_Monthly_return.join(Beta_shift1)
-#First 24 Month data and 2026-01-31 to 2026-02-28 data will drop. Ensure all the data used for model training are real observation
+# First 24 Month data and 2026-01-31 to 2026-02-28 data will drop. Ensure all the data used for model training are real observation
 Final_df = Final_df.dropna()
-Final_df = Final_df.drop(columns = ['Close'])
+Final_df = Final_df.drop(columns=['Close'])
 
-#Make sure the data is cleaned
-print(f'Final_df Date after cleaning,from {Final_df.index.get_level_values(level = 'Date').min()} to {Final_df.index.get_level_values(level = 'Date').max()}')
+# Feature Engineering(End)
 
-#Feature Engineering(End)
 
-#Machine Learning Model
+# Machine Learning Model
 
-#K-Means Clustering Algorithm
+# K-Means Clustering Algorithm
 class K_means:
     @staticmethod
     def kmeans(df):
-        #features = df.columns
-        #scaler = StandardScaler()
-        #scaled_data = scaler.fit_transform(df[features])
+        # features = df.columns
+        # scaler = StandardScaler()
+        # scaled_data = scaler.fit_transform(df[features])
 
         df['Cluster'] = (KMeans(n_clusters=4,
-                                random_state = 0,
-                                init = initial_centroids,).fit_predict(df))
+                                random_state=0,
+                                init=initial_centroids, ).fit_predict(df))
 
         cluster_means = df.groupby('Cluster')['RSI'].mean()
-        sorted_cluster_means = cluster_means.sort_values(ascending = False).index
+        sorted_cluster_means = cluster_means.sort_values(ascending=False).index
         mapping = {old_id: new_id for new_id, old_id in enumerate(sorted_cluster_means)}
 
         df['Cluster'] = df['Cluster'].map(mapping)
 
         return df
+
 
 class Plot_data:
     @staticmethod
@@ -256,22 +266,24 @@ class Plot_data:
         plt.style.use('ggplot')
         color = ['red', 'blue', 'green', 'yellow']
 
-        for cluster_id,DataFrame in df.groupby('Cluster'):
-            plt.scatter(DataFrame.iloc[:,1], DataFrame.iloc[:,5], color=color[cluster_id],label=f'Cluster {cluster_id}')
+        for cluster_id, DataFrame in df.groupby('Cluster'):
+            plt.scatter(DataFrame.iloc[:, 1], DataFrame.iloc[:, 5], color=color[cluster_id],
+                        label=f'Cluster {cluster_id}')
 
         plt.legend()
         plt.show()
         return
 
-#Apply pre-defined centroids
-target_rsi_value = [30,45,55,70]
-initial_centroids = np.zeros((len(target_rsi_value),18))
-initial_centroids[:,2] = target_rsi_value
 
-#Apply the K-means Function
-Final_df = Final_df.groupby('Date',group_keys = False).apply(K_means.kmeans)
+# Apply pre-defined centroids
+target_rsi_value = [30, 45, 55, 70]
+initial_centroids = np.zeros((len(target_rsi_value), 18))
+initial_centroids[:, 2] = target_rsi_value
 
-#Plot a chart to see which cluster in which position
+# Apply the K-means Function
+Final_df = Final_df.groupby('Date', group_keys=False).apply(K_means.kmeans)
+
+# Plot a chart to see which cluster in which position
 '''
 for i in Final_df.index.get_level_values('Date').unique().tolist():
     Data = Final_df.xs(i, level = 0)
@@ -279,39 +291,41 @@ for i in Final_df.index.get_level_values('Date').unique().tolist():
     Plot_data.plot_clusters(Data)
 '''
 
-#Filter the Data with RSI > 70 and ensure today is using the data in previous day(Avoid the look-ahead bias)
+# Filter the Data with RSI > 70 and ensure today is using the data in previous day(Avoid the look-ahead bias)
 Filter_Data = Final_df[Final_df['Cluster'] == 0]
-Filter_Data = Filter_Data.reset_index(level = 1)
-Filter_Data.index = Filter_Data.index+pd.DateOffset(days=1)
-Filter_Data = Filter_Data.reset_index().set_index(['Date','Ticker'])
+Filter_Data = Filter_Data.reset_index(level=1)
+Filter_Data.index = Filter_Data.index + pd.DateOffset(days=1)
+Filter_Data = Filter_Data.reset_index().set_index(['Date', 'Ticker'])
 
 Date = Filter_Data.index.get_level_values('Date').unique().tolist()
 List_to_invest = {}
 for i in Date:
-    List_to_invest[i.strftime('%Y-%m-%d')] = Filter_Data.xs(i, level = 0).index.tolist()
+    List_to_invest[i.strftime('%Y-%m-%d')] = Filter_Data.xs(i, level=0).index.tolist()
 
-#Define portfoilo optimization function
+
+# Define portfoilo optimization function
 def Optimize_weight(price):
     try:
         if price.empty or len(price.columns) < 3:
             return {'There are no stock RSI above 80 in this month or The number of valid stock is below 3'}
 
-        returns = expected_returns.mean_historical_return(prices = price,
-                                                         frequency = 252)
+        returns = expected_returns.mean_historical_return(prices=price,
+                                                          frequency=252)
 
-        cov = risk_models.sample_cov(prices = price,
-                                     frequency = 252)
+        cov = risk_models.sample_cov(prices=price,
+                                     frequency=252)
 
-        raw_lb = 1/(len(price.columns)*2)
+        raw_lb = 1 / (len(price.columns) * 2)
         lower_bound = min(round(raw_lb, 3), 0.9 / len(price.columns))
         upper_bound = max(0.1, 1.1 / len(price.columns))
 
         def create_ef():
-            return EfficientFrontier(expected_returns = returns,
-                                     cov_matrix = cov,
+            return EfficientFrontier(expected_returns=returns,
+                                     cov_matrix=cov,
                                      weight_bounds=(lower_bound, upper_bound),
-                                     solver= 'SCS'
+                                     solver='SCS'
                                      )
+
         try:
             ef_shape = create_ef()
             ef_shape.max_sharpe(risk_free_rate=0)
@@ -333,38 +347,37 @@ def Optimize_weight(price):
         print(f"Optimization failed：{e}")
         return {}
 
-#Download Fresh Daily Prices Data only for short_listed stocks 'List_to_invest'
+
+# Download Fresh Daily Prices Data only for short_listed stocks 'List_to_invest'
 stocks = Final_df.index.get_level_values('Ticker').unique().tolist()
 stocks_data = yf.download(tickers=stocks,
-                          start = Final_df.index.get_level_values('Date').unique()[0]-pd.DateOffset(months=12),
-                          end = Final_df.index.get_level_values('Date').unique()[-1],
+                          start=Final_df.index.get_level_values('Date').unique()[0] - pd.DateOffset(months=12),
+                          end=Final_df.index.get_level_values('Date').unique()[-1],
                           auto_adjust=True,
                           threads=True
                           )
 
-print(List_to_invest)
-print(stocks_data)
-
-#Calculate the Daily Return of the stock_data
+# Calculate the Daily Return of the stock_data
 returns_dataframe = np.log(stocks_data['Close']).diff()
 portfolio_df = {}
 all_portfolio_returns = []
 
 for start_date in List_to_invest.keys():
-    end_date = (pd.to_datetime(start_date)+pd.offsets.MonthEnd(0)).strftime('%Y-%m-%d')
+    end_date = (pd.to_datetime(start_date) + pd.offsets.MonthEnd(0)).strftime('%Y-%m-%d')
     cols = List_to_invest[start_date]
     valid_cols = [c for c in cols if c in stocks_data['Close'].columns]
-    optimization_start_date = (pd.to_datetime(start_date)-pd.DateOffset(months = 12)).strftime('%Y-%m-%d')
-    optimization_end_date = (pd.to_datetime(start_date)-pd.DateOffset(days = 1)).strftime('%Y-%m-%d')
+    optimization_start_date = (pd.to_datetime(start_date) - pd.DateOffset(months=12)).strftime('%Y-%m-%d')
+    optimization_end_date = (pd.to_datetime(start_date) - pd.DateOffset(days=1)).strftime('%Y-%m-%d')
 
-
+    # If not enough stocks, append 0 returns for the period
     if len(valid_cols) < 3:
         zero_idx = returns_dataframe.loc[start_date:end_date].index
         all_portfolio_returns.append(pd.Series(0, index=zero_idx))
         continue
 
-    optimization_df = stocks_data['Close'].loc[optimization_start_date:optimization_end_date,valid_cols]
+    optimization_df = stocks_data['Close'].loc[optimization_start_date:optimization_end_date, valid_cols]
 
+    # Optimize weights (assuming this returns a dictionary of {ticker: weight})
     weights = Optimize_weight(price=optimization_df)
 
     if weights:
@@ -376,21 +389,20 @@ for start_date in List_to_invest.keys():
         zero_idx = returns_dataframe.loc[start_date:end_date].index
         all_portfolio_returns.append(pd.Series(0, index=zero_idx))
 
-    print(weights)
-
+# Process final results
 if all_portfolio_returns:
     portfolio_df = pd.concat(all_portfolio_returns)
- 
+
     portfolio_df = portfolio_df[~portfolio_df.index.duplicated()]
 
     cumulative_returns = np.exp(portfolio_df.cumsum())
-    plt.plot(cumulative_returns, label='Strategy Cumulative Returns',color='blue',linestyle='-',alpha=0.7)
+    plt.plot(cumulative_returns, label='Strategy Cumulative Returns', color='blue', linestyle='-', alpha=0.7)
 
 test_start = portfolio_df.index.min()
 test_end = portfolio_df.index.max()
 
-sp500_buy_and_hold = yf.download(tickers='SPY',start = test_start,end = test_end)
-spy500_returns = np.log(sp500_buy_and_hold['Close']).diff().dropna()
+sp500_buy_and_hold = yf.download(tickers='SPY', start=test_start, end=test_end)
+spy500_returns = np.log(sp500_buy_and_hold['Close']).squeeze().diff().dropna()
 spy500_returns = spy500_returns.reindex(portfolio_df.index).fillna(0)
 spy_cumulative = np.exp(spy500_returns.cumsum())
 plt.plot(spy_cumulative, label='S&P 500 (SPY)', color='red', linestyle='-', alpha=0.7)
@@ -401,9 +413,12 @@ plt.legend()
 plt.grid(True)
 plt.show()
 
-print(all_portfolio_returns)
-print(portfolio_df)
-print(cumulative_returns)
+total_strategy_return = cumulative_returns.iloc[-1] - 1
+total_spy_return = spy_cumulative.iloc[-1] - 1
+alpha = total_strategy_return - total_spy_return
 
+print(f"total_strategy_return: {total_strategy_return:.2%}")
+print(f"total_spy_return: {total_spy_return:.2%}")
+print(f"alpha: {alpha:.2%}")
 
 
