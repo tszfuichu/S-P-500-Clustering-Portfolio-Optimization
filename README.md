@@ -71,6 +71,9 @@ Next Steps for Improvement
 To turn this pipeline into a profitable strategy, I plan to experiment with the following:
 
 Contrarian Strategy: Instead of buying the RSI>70 cluster, try buying the RSI<30 cluster (oversold) and waiting for mean reversion.
+
 Regime Filters: Implement a broader market trend filter (e.g., SPY 200-day moving average) to only take long positions during bull markets.
+
 Alternative Expected Returns: Replace historical mean returns with more robust estimators like the Black-Litterman model or Exponentially Weighted Moving Averages (EWMA).
+
 Transaction Costs: Add slippage and trading fees to the backtester to reflect real-world trading conditions.
