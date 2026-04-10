@@ -1,6 +1,3 @@
-# Quant-Journey-2026
-A comprehensive learning journey to becoming a Quantitative Trader in 2026. This repository documents my progress in financial data engineering, quantitative analysis, and algorithmic strategy development. All code is for educational purposes.
-
 # First Project:S&P 500 Clustering & Portfolio Optimization
 While the final backtested alpha of this specific strategy did not beat the S&P 500, building it was an incredible learning experience. This project serves as a foundational sandbox for testing advanced quantitative concepts.
 
